@@ -288,7 +288,8 @@ function mapType(raw){
 /* ---------- storage ---------- */
 let storageOK = true;
 const GARMIN_DEFAULT = {apiKey:'', relay:'', autoSync:true, lastSync:null};
-function blank(){ return {version:1, checkins:{}, workouts:[], settings:Object.assign({},DEFAULTS), icu:{athleteId:'',apiKey:''}, garmin:Object.assign({},GARMIN_DEFAULT), seeded:false}; }
+const STRAVA_DEFAULT = {access:'', refresh:'', expiresAt:0, athlete:'', autoSync:true, lastSync:null, pendingState:null};
+function blank(){ return {version:1, checkins:{}, workouts:[], settings:Object.assign({},DEFAULTS), icu:{athleteId:'',apiKey:''}, garmin:Object.assign({},GARMIN_DEFAULT), strava:Object.assign({},STRAVA_DEFAULT), seeded:false}; }
 function loadState(){
   let s = null;
   try { const raw = localStorage.getItem(KEY); if(raw) s = JSON.parse(raw); } catch(e){ storageOK = false; }
@@ -303,6 +304,7 @@ function normalize(s){
   s.settings = Object.assign({}, DEFAULTS, s.settings||{});
   s.icu = Object.assign({athleteId:'',apiKey:''}, s.icu||{});
   s.garmin = Object.assign({}, GARMIN_DEFAULT, s.garmin||{});
+  s.strava = Object.assign({}, STRAVA_DEFAULT, s.strava||{});
   return s;
 }
 function save(){
@@ -718,7 +720,7 @@ function renderDayDetail(d, ws){
     ${ci && ci.note ? `<p class="note">“${esc(ci.note)}”</p>` : ''}
     ${d<=t ? `<div class="row" style="margin-top:10px"><button class="btn sm" id="btn-ci-d">${ci?'Edit check-in':'Add check-in'}</button></div>` : ''}
     <h3 style="margin-top:14px">Workouts</h3>
-    ${ws.length ? `<ul class="wlist">${ws.map(w=>`<li><div class="wt"><b>${esc(w.name||TYPE_LABEL[w.type])}</b><span>${TYPE_LABEL[w.type]} · ${w.durationMin||0} min${w.distance?` · ${w.distance} ${u}`:''}${w.avgHr?` · ${w.avgHr} bpm`:''} · load ${fmt(workoutLoad(w))}</span></div>${w.source==='planner' ? '<span class="tag">Planner</span>' : `<span class="tag">${w.source==='garmin'?'Garmin':w.source==='intervals'?'Intervals':w.source==='csv'?'CSV':'Manual'}</span><button class="btn sm danger" data-del="${esc(w.id)}">Delete</button>`}</li>`).join('')}</ul>` : '<p class="muted">None logged.</p>'}
+    ${ws.length ? `<ul class="wlist">${ws.map(w=>`<li><div class="wt"><b>${esc(w.name||TYPE_LABEL[w.type])}</b><span>${TYPE_LABEL[w.type]} · ${w.durationMin||0} min${w.distance?` · ${w.distance} ${u}`:''}${w.avgHr?` · ${w.avgHr} bpm`:''} · load ${fmt(workoutLoad(w))}</span></div>${w.source==='planner' ? '<span class="tag">Planner</span>' : `<span class="tag">${w.source==='garmin'?'Garmin':w.source==='strava'?'Strava':w.source==='intervals'?'Intervals':w.source==='csv'?'CSV':'Manual'}</span><button class="btn sm danger" data-del="${esc(w.id)}">Delete</button>`}</li>`).join('')}</ul>` : '<p class="muted">None logged.</p>'}
   </div>`;
   $('#btn-ci-d')?.addEventListener('click', () => openCheckin(d));
   document.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => {
@@ -740,12 +742,21 @@ function renderPrefs(){
     <details class="card" open><summary>Garmin Connect</summary><div class="set-group">
       <p class="note">Pulls the last 60 days of activities, HRV, resting HR and sleep using Garmin’s Personal API. Create a key in Garmin Connect on the web → Settings → Personal API token. The key stays on this device and is left out of backups.</p>
       <label class="field"><span>Personal API key</span><input type="password" id="g-key" value="${esc(S.garmin.apiKey)}" autocomplete="off" placeholder="Paste your Garmin key"></label>
-      <label class="field"><span>Relay address (only if sync says it can’t reach Garmin)</span><input type="text" id="g-relay" value="${esc(S.garmin.relay)}" autocomplete="off" placeholder="https://dragon-relay.yourname.workers.dev"></label>
+      <label class="field"><span>Relay address (needed for Strava, and for Garmin if sync can’t reach it)</span><input type="text" id="g-relay" value="${esc(S.garmin.relay)}" autocomplete="off" placeholder="https://dragon-relay.yourname.workers.dev"></label>
       <label class="tg"><span>Sync automatically when the app opens</span><input type="checkbox" id="g-auto"${S.garmin.autoSync?' checked':''}></label>
       <button class="btn primary" id="btn-garmin">Sync from Garmin</button>
       <div class="status" id="g-status"${S.garmin.lastSync?'':' hidden'}>${S.garmin.lastSync ? 'Last synced '+new Date(S.garmin.lastSync).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'.' : ''}</div>
       <button class="btn sm ghost" id="btn-g-debug">Show last Garmin responses</button>
       <textarea class="code" id="g-debug" readonly hidden></textarea>
+    </div></details>
+
+    <details class="card" open><summary>Strava</summary><div class="set-group">
+      <p class="note">Pulls the last 60 days of activities. Strava has no HRV or sleep data, so it adds to Garmin rather than replacing it. Rides already synced from Garmin are not added twice. Needs the relay above with your Strava app keys saved on it.</p>
+      ${S.strava.refresh ? `<div class="status ok">Connected${S.strava.athlete ? ' as ' + esc(S.strava.athlete) : ''}.</div>
+      <div class="row"><button class="btn primary" id="btn-strava-sync">Sync from Strava</button><button class="btn danger" id="btn-strava-off">Disconnect</button></div>
+      <label class="tg"><span>Sync automatically when the app opens</span><input type="checkbox" id="s-auto"${S.strava.autoSync?' checked':''}></label>`
+      : `<button class="btn primary" id="btn-strava-connect">Connect Strava</button>`}
+      <div class="status" id="s-status"${S.strava.lastSync?'':' hidden'}>${S.strava.lastSync ? 'Last synced '+new Date(S.strava.lastSync).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'.' : ''}</div>
     </div></details>
 
     <details class="card"><summary>Intervals.icu import</summary><div class="set-group">
@@ -810,6 +821,10 @@ function bindPrefs(){
   $('#g-relay').onchange = e => { S.garmin.relay = e.target.value.trim(); save(); };
   $('#g-auto').onchange = e => { S.garmin.autoSync = e.target.checked; save(); };
   $('#btn-garmin').onclick = () => garminImport({});
+  $('#btn-strava-connect')?.addEventListener('click', stravaConnect);
+  $('#btn-strava-sync')?.addEventListener('click', () => stravaImport({}));
+  $('#s-auto')?.addEventListener('change', e => { S.strava.autoSync = e.target.checked; save(); });
+  const so = $('#btn-strava-off'); if(so) armed(so, 'Tap again to disconnect', stravaDisconnect);
   $('#btn-g-debug').onclick = () => {
     const ta = $('#g-debug'); ta.hidden = false;
     const keys = Object.keys(garminRaw);
@@ -825,7 +840,7 @@ function bindPrefs(){
   $('#btn-csv').onclick = () => importCSV($('#csv-text').value);
   $('#json-file').onchange = e => readFile(e.target.files[0], txt => { $('#json-in').value = txt; });
   $('#btn-export').onclick = () => {
-    const data = JSON.parse(JSON.stringify(S)); data.icu = {athleteId: S.icu.athleteId, apiKey:''}; data.garmin = Object.assign({}, S.garmin, {apiKey:''});
+    const data = JSON.parse(JSON.stringify(S)); data.icu = {athleteId: S.icu.athleteId, apiKey:''}; data.garmin = Object.assign({}, S.garmin, {apiKey:''}); data.strava = Object.assign({}, STRAVA_DEFAULT);
     const out = JSON.stringify({app:'Dragon Training', key:KEY, exported:new Date().toISOString(), data}, null, 1);
     const ta = $('#json-out'); ta.value = out; ta.hidden = false; $('#btn-copy').hidden = false; $('#btn-savefile').hidden = false;
   };
@@ -842,12 +857,12 @@ function bindPrefs(){
     try {
       const obj = JSON.parse($('#json-in').value); const data = obj && obj.data ? obj.data : obj;
       if(!data || typeof data!=='object' || (!data.checkins && !data.workouts)) throw new Error('That does not look like a Dragon Training backup.');
-      const key = S.icu.apiKey, gkey = S.garmin.apiKey; S = normalize(data); S.seeded = true; if(!S.icu.apiKey) S.icu.apiKey = key; if(!S.garmin.apiKey) S.garmin.apiKey = gkey;
+      const key = S.icu.apiKey, gkey = S.garmin.apiKey, sv = S.strava; S = normalize(data); S.seeded = true; if(!S.icu.apiKey) S.icu.apiKey = key; if(!S.garmin.apiKey) S.garmin.apiKey = gkey; if(!S.strava.refresh) S.strava = sv;
       save(); refresh(); setStatus('#json-status', `Restored ${Object.keys(S.checkins).length} check-ins and ${S.workouts.length} workouts.`, 'ok');
     } catch(e){ setStatus('#json-status', 'Restore failed: ' + e.message, 'err'); }
   };
   $('#btn-defaults').onclick = () => { S.settings = Object.assign({}, DEFAULTS, {units:S.settings.units}); save(); refresh(); toast('Defaults restored'); };
-  armed($('#btn-wipe'), 'Tap again to delete everything', () => { const k = S.icu, g = S.garmin; S = blank(); S.seeded = true; S.icu = k; S.garmin = Object.assign({}, g, {lastSync:null}); save(); refresh(); toast('All data deleted'); });
+  armed($('#btn-wipe'), 'Tap again to delete everything', () => { const k = S.icu, g = S.garmin, sv0 = S.strava; S = blank(); S.seeded = true; S.icu = k; S.garmin = Object.assign({}, g, {lastSync:null}); S.strava = Object.assign({}, sv0, {lastSync:null}); save(); refresh(); toast('All data deleted'); });
 }
 function readFile(f, cb){ if(!f) return; const r = new FileReader(); r.onload = () => cb(String(r.result)); r.readAsText(f); }
 
@@ -1070,7 +1085,7 @@ async function garminImport(opts){
         avgHr: num(a.averageHR) != null ? Math.round(a.averageHR) : null, tss: num(a.trainingStressScore), rpe: null, source:'garmin'};
       const i = S.workouts.findIndex(x => x.id === w.id);
       if(i >= 0){ const keepRpe = S.workouts[i].rpe; S.workouts[i] = Object.assign(w, {rpe: keepRpe}); nu++; return; }
-      const dup = S.workouts.some(x => !x.sample && x.source !== 'garmin' && x.date === w.date && x.type === w.type && Math.abs((x.durationMin||0) - w.durationMin) <= 3);
+      const dup = S.workouts.some(x => !x.sample && x.source !== 'garmin' && sameSession(x, w.date, w.type, [w.durationMin]));
       if(dup) return;
       S.workouts.push(w); na++;
     });
@@ -1102,6 +1117,121 @@ async function garminImport(opts){
     setStatus('#g-status', msg, 'err');
     if(opts.quiet) toast('Garmin sync failed. See Settings.');
   } finally { garminBusy = false; }
+}
+
+/* ---------- shared: duplicate check ---------- */
+function sameSession(x, date, type, mins){
+  if(x.date !== date || x.type !== type) return false;
+  const d = x.durationMin || 0;
+  return mins.some(m => m != null && Math.abs(d - m) <= Math.max(5, 0.1 * Math.max(d, m)));
+}
+
+/* ---------- Strava (through the relay) ---------- */
+const STRAVA_SCOPE = 'read,activity:read_all';
+let stravaBusy = false;
+function relayBase(){ return (S.garmin.relay||'').trim().replace(/\/+$/,''); }
+function appUrl(){ return location.origin + location.pathname; }
+async function rFetch(path, opts){
+  const ctrl = ('AbortController' in window) ? new AbortController() : null;
+  const timer = setTimeout(() => ctrl && ctrl.abort(), 25000);
+  try {
+    const r = await fetch(relayBase() + path, Object.assign({signal: ctrl ? ctrl.signal : undefined}, opts));
+    if(!r.ok){
+      let detail = ''; try { const j = await r.clone().json(); detail = j.error || j.message || ''; } catch(e){}
+      const e = new Error(detail || ('HTTP ' + r.status)); e.status = r.status; e.detail = detail; throw e;
+    }
+    return r;
+  } finally { clearTimeout(timer); }
+}
+function stravaErr(e){
+  if(e.detail && /not set on the relay/i.test(e.detail)) return 'Your Strava app keys aren’t saved on the relay yet. Add STRAVA_CLIENT_ID and STRAVA_CLIENT_SECRET in Cloudflare.';
+  if(e.status === 401) return 'Strava access expired or was revoked. Disconnect and connect again.';
+  if(e.status === 403) return 'Strava refused the request. If you just set up your Strava app, check it has API access.';
+  if(e.status === 404) return 'The relay doesn’t know about Strava yet. Paste the new relay code into Cloudflare and deploy it.';
+  if(e.status === 429) return 'Strava is limiting requests right now. Try again in 15 minutes.';
+  if(e.status) return `Strava returned an error (${e.status})${e.detail ? ': ' + e.detail : ''}.`;
+  if(e.name === 'AbortError') return 'Strava took too long to answer. Try again.';
+  return 'Couldn’t reach the relay. Check the relay address in the Garmin section.';
+}
+function stravaSaveTokens(j){
+  if(!j || !j.access_token){ const e = new Error((j && (j.message || j.error)) || 'Strava did not return a token'); e.detail = e.message; e.status = 'token'; throw e; }
+  S.strava.access = j.access_token; S.strava.refresh = j.refresh_token || S.strava.refresh; S.strava.expiresAt = (j.expires_at || 0) * 1000;
+}
+async function stravaConnect(){
+  const rel = document.getElementById('g-relay'); if(rel){ S.garmin.relay = rel.value.trim(); save(); }
+  if(!relayBase()){ setStatus('#s-status', 'Set up the relay first, then paste its address in the Garmin section.', 'err'); return; }
+  setStatus('#s-status', 'Opening Strava…');
+  try {
+    const cfg = await (await rFetch('/strava/config')).json();
+    if(!cfg.client_id){ setStatus('#s-status', 'Your Strava app keys aren’t saved on the relay yet.', 'err'); return; }
+    const state = 'strava-' + uid(); S.strava.pendingState = state; save();
+    location.href = 'https://www.strava.com/oauth/authorize?' + new URLSearchParams({client_id: cfg.client_id, response_type:'code', redirect_uri: appUrl(), approval_prompt:'auto', scope: STRAVA_SCOPE, state});
+  } catch(e){ setStatus('#s-status', stravaErr(e), 'err'); }
+}
+async function stravaHandleRedirect(){
+  let q; try { q = new URLSearchParams(location.search); } catch(e){ return false; }
+  const state = q.get('state') || '';
+  if(!state.startsWith('strava-')) return false;
+  const clean = () => { try { history.replaceState(null, '', appUrl() + location.hash); } catch(e){} };
+  if(q.get('error')){ clean(); toast('Strava connection cancelled'); return true; }
+  if(state !== S.strava.pendingState){ clean(); toast('That Strava sign-in expired. Tap Connect Strava again.'); return true; }
+  if(!/activity:read/.test(q.get('scope') || '')){ clean(); toast('Strava needs permission to view your activities. Connect again and leave that box ticked.'); return true; }
+  try {
+    const r = await rFetch('/strava/token', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({code: q.get('code')})});
+    const j = await r.json(); stravaSaveTokens(j);
+    S.strava.athlete = j.athlete ? [j.athlete.firstname, j.athlete.lastname].filter(Boolean).join(' ') : '';
+    S.strava.pendingState = null; save(); clean();
+    toast('Strava connected'); if(current === 'prefs') renderPrefs();
+    stravaImport({quiet:true});
+  } catch(e){ clean(); toast('Strava connection failed. ' + stravaErr(e)); }
+  return true;
+}
+async function stravaAccess(){
+  if(S.strava.access && S.strava.expiresAt - Date.now() > 300e3) return S.strava.access;
+  const r = await rFetch('/strava/token', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({refresh_token: S.strava.refresh})});
+  stravaSaveTokens(await r.json()); save();
+  return S.strava.access;
+}
+async function stravaImport(opts){
+  opts = opts || {};
+  if(stravaBusy || !S.strava.refresh) return;
+  stravaBusy = true; setStatus('#s-status', 'Syncing from Strava…');
+  try {
+    const tok = await stravaAccess();
+    const after = Math.floor(parseDs(addDays(todayStr(), -59)).getTime() / 1000);
+    const acts = [];
+    for(let page = 1; page <= 5; page++){
+      const r = await rFetch(`/strava/api/v3/athlete/activities?after=${after}&per_page=100&page=${page}`, {headers:{Authorization:'Bearer ' + tok}});
+      const list = await r.json(); if(!Array.isArray(list)) break;
+      acts.push(...list); if(list.length < 100) break;
+    }
+    let na = 0, nu = 0, nd = 0;
+    acts.forEach(a => {
+      if(!a || a.id == null) return;
+      const date = String(a.start_date_local || a.start_date || '').slice(0,10); if(!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+      const type = mapType((a.sport_type || a.type || '') + ' ' + (a.name || ''));
+      const moving = Math.round((a.moving_time || 0) / 60), elapsed = Math.round((a.elapsed_time || 0) / 60);
+      const w = {id:'strava-' + a.id, date, type, name: a.name || a.sport_type || 'Strava activity', durationMin: moving || elapsed,
+        distance: a.distance ? Math.round(a.distance / (S.settings.units==='mi' ? 1609.34 : 1000) * 10)/10 : null,
+        avgHr: a.average_heartrate ? Math.round(a.average_heartrate) : null, tss: null, rpe: null, source:'strava'};
+      const i = S.workouts.findIndex(x => x.id === w.id);
+      if(i >= 0){ w.rpe = S.workouts[i].rpe; S.workouts[i] = w; nu++; return; }
+      if(S.workouts.some(x => !x.sample && x.source !== 'strava' && sameSession(x, date, type, [moving, elapsed]))){ nd++; return; }
+      S.workouts.push(w); na++;
+    });
+    S.strava.lastSync = Date.now(); save(); refreshData();
+    setStatus('#s-status', `Synced ${na} new activit${na===1?'y':'ies'}` + (nu ? `, ${nu} updated` : '') + (nd ? `, ${nd} skipped as already synced from another source` : '') + '.', 'ok');
+    if(opts.quiet) toast('Strava synced');
+  } catch(e){
+    setStatus('#s-status', stravaErr(e), 'err');
+    if(opts.quiet) toast('Strava sync failed. See Settings.');
+  } finally { stravaBusy = false; }
+}
+async function stravaDisconnect(){
+  try { if(S.strava.access) await rFetch('/strava/deauthorize', {method:'POST', headers:{Authorization:'Bearer ' + S.strava.access}}); } catch(e){}
+  const keepWorkouts = S.workouts.length;
+  S.strava = Object.assign({}, STRAVA_DEFAULT); save(); renderPrefs();
+  toast(`Strava disconnected. ${keepWorkouts ? 'Imported activities were kept.' : ''}`.trim());
 }
 
 /* ---------- sheets ---------- */
@@ -1206,6 +1336,9 @@ $('#hdr-date').textContent = new Date().toLocaleDateString(undefined,{weekday:'s
 buildSeries();
 show(location.hash.slice(1) || 'today');
 if(S.garmin.apiKey && S.garmin.autoSync && (!S.garmin.lastSync || Date.now() - S.garmin.lastSync > 3*3600e3)) setTimeout(() => garminImport({quiet:true}), 800);
+stravaHandleRedirect().then(handled => {
+  if(!handled && S.strava.refresh && S.strava.autoSync && (!S.strava.lastSync || Date.now() - S.strava.lastSync > 3*3600e3)) setTimeout(() => stravaImport({quiet:true}), 2500);
+});
 })();
 </script>
 

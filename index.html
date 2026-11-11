@@ -287,7 +287,8 @@ function mapType(raw){
 
 /* ---------- storage ---------- */
 let storageOK = true;
-function blank(){ return {version:1, checkins:{}, workouts:[], settings:Object.assign({},DEFAULTS), icu:{athleteId:'',apiKey:''}, seeded:false}; }
+const GARMIN_DEFAULT = {apiKey:'', relay:'', autoSync:true, lastSync:null};
+function blank(){ return {version:1, checkins:{}, workouts:[], settings:Object.assign({},DEFAULTS), icu:{athleteId:'',apiKey:''}, garmin:Object.assign({},GARMIN_DEFAULT), seeded:false}; }
 function loadState(){
   let s = null;
   try { const raw = localStorage.getItem(KEY); if(raw) s = JSON.parse(raw); } catch(e){ storageOK = false; }
@@ -301,6 +302,7 @@ function normalize(s){
   s.workouts = Array.isArray(s.workouts) ? s.workouts : [];
   s.settings = Object.assign({}, DEFAULTS, s.settings||{});
   s.icu = Object.assign({athleteId:'',apiKey:''}, s.icu||{});
+  s.garmin = Object.assign({}, GARMIN_DEFAULT, s.garmin||{});
   return s;
 }
 function save(){
@@ -716,7 +718,7 @@ function renderDayDetail(d, ws){
     ${ci && ci.note ? `<p class="note">“${esc(ci.note)}”</p>` : ''}
     ${d<=t ? `<div class="row" style="margin-top:10px"><button class="btn sm" id="btn-ci-d">${ci?'Edit check-in':'Add check-in'}</button></div>` : ''}
     <h3 style="margin-top:14px">Workouts</h3>
-    ${ws.length ? `<ul class="wlist">${ws.map(w=>`<li><div class="wt"><b>${esc(w.name||TYPE_LABEL[w.type])}</b><span>${TYPE_LABEL[w.type]} · ${w.durationMin||0} min${w.distance?` · ${w.distance} ${u}`:''}${w.avgHr?` · ${w.avgHr} bpm`:''} · load ${fmt(workoutLoad(w))}</span></div>${w.source==='planner' ? '<span class="tag">Planner</span>' : `<span class="tag">${w.source==='intervals'?'Intervals':w.source==='csv'?'CSV':'Manual'}</span><button class="btn sm danger" data-del="${esc(w.id)}">Delete</button>`}</li>`).join('')}</ul>` : '<p class="muted">None logged.</p>'}
+    ${ws.length ? `<ul class="wlist">${ws.map(w=>`<li><div class="wt"><b>${esc(w.name||TYPE_LABEL[w.type])}</b><span>${TYPE_LABEL[w.type]} · ${w.durationMin||0} min${w.distance?` · ${w.distance} ${u}`:''}${w.avgHr?` · ${w.avgHr} bpm`:''} · load ${fmt(workoutLoad(w))}</span></div>${w.source==='planner' ? '<span class="tag">Planner</span>' : `<span class="tag">${w.source==='garmin'?'Garmin':w.source==='intervals'?'Intervals':w.source==='csv'?'CSV':'Manual'}</span><button class="btn sm danger" data-del="${esc(w.id)}">Delete</button>`}</li>`).join('')}</ul>` : '<p class="muted">None logged.</p>'}
   </div>`;
   $('#btn-ci-d')?.addEventListener('click', () => openCheckin(d));
   document.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => {
@@ -733,6 +735,17 @@ function renderPrefs(){
       <div class="status">${pl ? `Reading ${pl} completed workout${pl>1?'s':''} from Workout Planner.` : 'No Workout Planner data found on this device. It is read automatically when both apps share the same storage (for example inside the same APK).'}</div>
       ${hasSample() ? `<button class="btn danger" id="btn-clear-sample">Clear sample data</button>` : ''}
       <div class="field"><span>Distance units</span><select id="set-units"><option value="mi"${st.units==='mi'?' selected':''}>Miles</option><option value="km"${st.units==='km'?' selected':''}>Kilometres</option></select></div>
+    </div></details>
+
+    <details class="card" open><summary>Garmin Connect</summary><div class="set-group">
+      <p class="note">Pulls the last 60 days of activities, HRV, resting HR and sleep using Garmin’s Personal API. Create a key in Garmin Connect on the web → Settings → Personal API token. The key stays on this device and is left out of backups.</p>
+      <label class="field"><span>Personal API key</span><input type="password" id="g-key" value="${esc(S.garmin.apiKey)}" autocomplete="off" placeholder="Paste your Garmin key"></label>
+      <label class="field"><span>Relay address (only if sync says it can’t reach Garmin)</span><input type="text" id="g-relay" value="${esc(S.garmin.relay)}" autocomplete="off" placeholder="https://dragon-relay.yourname.workers.dev"></label>
+      <label class="tg"><span>Sync automatically when the app opens</span><input type="checkbox" id="g-auto"${S.garmin.autoSync?' checked':''}></label>
+      <button class="btn primary" id="btn-garmin">Sync from Garmin</button>
+      <div class="status" id="g-status"${S.garmin.lastSync?'':' hidden'}>${S.garmin.lastSync ? 'Last synced '+new Date(S.garmin.lastSync).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})+'.' : ''}</div>
+      <button class="btn sm ghost" id="btn-g-debug">Show last Garmin responses</button>
+      <textarea class="code" id="g-debug" readonly hidden></textarea>
     </div></details>
 
     <details class="card"><summary>Intervals.icu import</summary><div class="set-group">
@@ -793,6 +806,15 @@ function bindPrefs(){
   $('#icu-id').onchange = e => { S.icu.athleteId = e.target.value.trim(); save(); };
   $('#icu-key').onchange = e => { S.icu.apiKey = e.target.value.trim(); save(); };
   $('#btn-icu').onclick = icuImport;
+  $('#g-key').onchange = e => { S.garmin.apiKey = e.target.value.trim(); garminToken = null; save(); };
+  $('#g-relay').onchange = e => { S.garmin.relay = e.target.value.trim(); save(); };
+  $('#g-auto').onchange = e => { S.garmin.autoSync = e.target.checked; save(); };
+  $('#btn-garmin').onclick = () => garminImport({});
+  $('#btn-g-debug').onclick = () => {
+    const ta = $('#g-debug'); ta.hidden = false;
+    const keys = Object.keys(garminRaw);
+    ta.value = keys.length ? keys.map(k => '### ' + k + '\n' + garminRaw[k]).join('\n\n') : 'Nothing yet. Run a sync first.';
+  };
   const cs = $('#btn-clear-sample');
   if(cs) armed(cs, 'Tap again to clear', () => {
     S.workouts = S.workouts.filter(w=>!w.sample);
@@ -803,7 +825,7 @@ function bindPrefs(){
   $('#btn-csv').onclick = () => importCSV($('#csv-text').value);
   $('#json-file').onchange = e => readFile(e.target.files[0], txt => { $('#json-in').value = txt; });
   $('#btn-export').onclick = () => {
-    const data = JSON.parse(JSON.stringify(S)); data.icu = {athleteId: S.icu.athleteId, apiKey:''};
+    const data = JSON.parse(JSON.stringify(S)); data.icu = {athleteId: S.icu.athleteId, apiKey:''}; data.garmin = Object.assign({}, S.garmin, {apiKey:''});
     const out = JSON.stringify({app:'Dragon Training', key:KEY, exported:new Date().toISOString(), data}, null, 1);
     const ta = $('#json-out'); ta.value = out; ta.hidden = false; $('#btn-copy').hidden = false; $('#btn-savefile').hidden = false;
   };
@@ -820,12 +842,12 @@ function bindPrefs(){
     try {
       const obj = JSON.parse($('#json-in').value); const data = obj && obj.data ? obj.data : obj;
       if(!data || typeof data!=='object' || (!data.checkins && !data.workouts)) throw new Error('That does not look like a Dragon Training backup.');
-      const key = S.icu.apiKey; S = normalize(data); S.seeded = true; if(!S.icu.apiKey) S.icu.apiKey = key;
+      const key = S.icu.apiKey, gkey = S.garmin.apiKey; S = normalize(data); S.seeded = true; if(!S.icu.apiKey) S.icu.apiKey = key; if(!S.garmin.apiKey) S.garmin.apiKey = gkey;
       save(); refresh(); setStatus('#json-status', `Restored ${Object.keys(S.checkins).length} check-ins and ${S.workouts.length} workouts.`, 'ok');
     } catch(e){ setStatus('#json-status', 'Restore failed: ' + e.message, 'err'); }
   };
   $('#btn-defaults').onclick = () => { S.settings = Object.assign({}, DEFAULTS, {units:S.settings.units}); save(); refresh(); toast('Defaults restored'); };
-  armed($('#btn-wipe'), 'Tap again to delete everything', () => { const k = S.icu; S = blank(); S.seeded = true; S.icu = k; save(); refresh(); toast('All data deleted'); });
+  armed($('#btn-wipe'), 'Tap again to delete everything', () => { const k = S.icu, g = S.garmin; S = blank(); S.seeded = true; S.icu = k; S.garmin = Object.assign({}, g, {lastSync:null}); save(); refresh(); toast('All data deleted'); });
 }
 function readFile(f, cb){ if(!f) return; const r = new FileReader(); r.onload = () => cb(String(r.result)); r.readAsText(f); }
 
@@ -926,6 +948,160 @@ async function icuImport(){
     else msg = 'Could not reach Intervals.icu. This preview blocks outside connections; the import works from the APK or a downloaded copy of the page. CSV import works everywhere.';
     setStatus('#icu-status', msg, 'err');
   } finally { clearTimeout(timer); }
+}
+
+/* ---------- Garmin Personal API ---------- */
+const GARMIN_BASE = 'https://personal.connectapi.garmin.com';
+const GARMIN_TOKEN_PATH = '/personalapitoken-service/personal-api/personal-api-key/token';
+let garminToken = null, garminBusy = false; const garminRaw = {};
+function gBase(){ const r = (S.garmin.relay||'').trim().replace(/\/+$/,''); return r || GARMIN_BASE; }
+function jwtExp(t){
+  try { let p = t.split('.')[1].replace(/-/g,'+').replace(/_/g,'/'); p += '='.repeat((4 - p.length % 4) % 4); const e = JSON.parse(atob(p)).exp; if(e) return e*1000; } catch(e){}
+  return Date.now() + 20*3600e3;
+}
+async function gFetch(path, opts){
+  const ctrl = ('AbortController' in window) ? new AbortController() : null;
+  const timer = setTimeout(() => ctrl && ctrl.abort(), 25000);
+  try {
+    const r = await fetch(gBase() + path, Object.assign({signal: ctrl ? ctrl.signal : undefined}, opts));
+    if(!r.ok){ const e = new Error('HTTP ' + r.status); e.status = r.status; e.path = path; throw e; }
+    return r;
+  } finally { clearTimeout(timer); }
+}
+async function gToken(){
+  if(garminToken && garminToken.exp - Date.now() > 3600e3) return garminToken.token;
+  const r = await gFetch(GARMIN_TOKEN_PATH, {method:'POST', headers:{Accept:'*/*', Authorization:'ApiKey ' + S.garmin.apiKey}});
+  let tok = (await r.text()).trim();
+  if(tok.startsWith('{')){ try { const j = JSON.parse(tok); tok = j.access_token || j.accessToken || j.token || ''; } catch(e){ tok = ''; } }
+  tok = tok.replace(/^"|"$/g,'');
+  if(!tok){ const e = new Error('Empty token'); e.status = 'token'; throw e; }
+  garminToken = {token: tok, exp: jwtExp(tok)};
+  return tok;
+}
+async function gGet(path, label){
+  const tok = await gToken();
+  const r = await gFetch(path, {headers:{Accept:'application/json', Authorization:'Bearer ' + tok}});
+  const txt = await r.text();
+  if(label) garminRaw[label + '  ' + path] = txt.slice(0, 3000) + (txt.length > 3000 ? '\n… (truncated)' : '');
+  try { return txt ? JSON.parse(txt) : null; } catch(e){ return null; }
+}
+function gWalk(node, fn, depth){
+  depth = depth||0; if(depth > 8 || !node || typeof node !== 'object') return;
+  if(Array.isArray(node)){ node.forEach(n => gWalk(n, fn, depth+1)); return; }
+  fn(node);
+  Object.keys(node).forEach(k => { const v = node[k]; if(v && typeof v === 'object') gWalk(v, fn, depth+1); });
+}
+function gDate(o){
+  const v = o.calendarDate || o.summaryDate || o.calendarDateString || o.date;
+  return (typeof v === 'string' && /^\d{4}-\d{2}-\d{2}/.test(v)) ? v.slice(0,10) : null;
+}
+function gRanges(days, size){
+  const t = todayStr(), out = [];
+  for(let end = 0; end < days; end += size){ out.push([addDays(t, -Math.min(days-1, end+size-1)), addDays(t, -end)]); }
+  return out;
+}
+function gSleepOf(o){
+  const secs = num(o.sleepTimeSeconds) ?? num(o.totalSleepTimeInSeconds) ?? num(o.sleepTimeInSeconds) ?? num(o.durationInSeconds);
+  const sc = o.sleepScores && o.sleepScores.overall ? num(o.sleepScores.overall.value) : null;
+  const score = sc ?? (o.overallSleepScore && typeof o.overallSleepScore === 'object' ? num(o.overallSleepScore.value) : num(o.overallSleepScore)) ?? num(o.sleepScore);
+  return {secs, score};
+}
+
+async function garminImport(opts){
+  opts = opts || {};
+  if(garminBusy) return;
+  const keyEl = document.getElementById('g-key'); if(keyEl){ S.garmin.apiKey = keyEl.value.trim(); }
+  const relEl = document.getElementById('g-relay'); if(relEl){ S.garmin.relay = relEl.value.trim(); }
+  save();
+  if(!S.garmin.apiKey){ setStatus('#g-status', 'Paste your Garmin personal API key first.', 'err'); return; }
+  garminBusy = true;
+  setStatus('#g-status', 'Syncing from Garmin…');
+  const days = 60, t = todayStr(), well = {}; const W = d => (well[d] = well[d] || {});
+  const notes = [];
+  try {
+    await gToken();
+    // HRV
+    for(const [a,b] of gRanges(days, 28)){
+      try { const j = await gGet(`/hrv-service/hrv/daily/${a}/${b}`, 'HRV');
+        gWalk(j, o => { const d = gDate(o), v = num(o.lastNightAvg); if(d && v != null) W(d).hrv = Math.round(v); });
+      } catch(e){ if(e.status===401||e.status===403||e.status==='token'||!e.status) throw e; notes.push('HRV'); break; }
+    }
+    // Resting HR (daily summaries)
+    for(const [a,b] of gRanges(days, 28)){
+      try { const j = await gGet(`/usersummary-service/v2/dailysummaries?startDate=${a}&endDate=${b}`, 'Daily summaries');
+        gWalk(j, o => { const d = gDate(o), v = num(o.restingHeartRate) ?? num(o.restingHeartRateValue) ?? num(o.restingHR); if(d && v != null && v > 0) W(d).rhr = Math.round(v); });
+      } catch(e){ if(e.status===401||e.status===403||!e.status) throw e; notes.push('daily summaries'); break; }
+    }
+    // Sleep summaries
+    for(const [a,b] of gRanges(days, 28)){
+      try { const j = await gGet(`/sleep-service/sleep/dailySleepSummariesByDate?startDate=${a}&endDate=${b}`, 'Sleep');
+        gWalk(j, o => { const d = gDate(o); if(!d) return; const s = gSleepOf(o); if(s.secs != null && s.secs > 0) W(d).sleepH = Math.round(s.secs/900)/4; if(s.score != null) W(d).sleepScore = Math.round(s.score); });
+      } catch(e){ if(e.status===401||e.status===403||!e.status) throw e; notes.push('sleep summaries'); break; }
+    }
+    // Per-day fallbacks for the last 10 days if a range call returned nothing usable
+    const recent = []; for(let i=0;i<10;i++) recent.push(addDays(t,-i));
+    if(!recent.some(d => well[d] && well[d].rhr != null)){
+      for(const d of recent){ try { const j = await gGet(`/wellness-service/wellness/dailyHeartRate?date=${d}`, d===t?'Heart rate':null);
+        gWalk(j, o => { const v = num(o.restingHeartRate); if(v != null && v > 0) W(d).rhr = Math.round(v); }); } catch(e){ break; } }
+    }
+    if(!recent.some(d => well[d] && well[d].sleepH != null)){
+      for(const d of recent){ try { const j = await gGet(`/sleep-service/sleep/dailySleep?date=${d}`, d===t?'Sleep (single day)':null);
+        let got = false;
+        gWalk(j, o => { if(got) return; const s = gSleepOf(o); if(s.secs != null && s.secs > 0){ W(d).sleepH = Math.round(s.secs/900)/4; if(s.score != null) W(d).sleepScore = Math.round(s.score); got = true; } }); } catch(e){ break; } }
+    }
+    // Activities
+    const acts = []; const start = addDays(t, -days+1);
+    for(let page = 0; page < 5; page++){
+      const j = await gGet(`/activitylist-service/activities/search/activities?start=${page*100}&limit=100&startDate=${start}&endDate=${t}`, page===0?'Activities':null);
+      const list = Array.isArray(j) ? j : (j && (j.activityList || j.activities || j.items)) || [];
+      acts.push(...list); if(list.length < 100) break;
+    }
+    // Merge activities
+    let na = 0, nu = 0;
+    acts.forEach(a => {
+      if(!a || a.activityId == null) return;
+      let date = String(a.startTimeLocal || '').slice(0,10);
+      if(!/^\d{4}-\d{2}-\d{2}$/.test(date)){ const dt = new Date(a.startTimeGMT ? String(a.startTimeGMT).replace(' ','T')+'Z' : a.beginTimestamp); if(isNaN(dt)) return; date = ds(dt); }
+      const typeKey = (a.activityType && (a.activityType.typeKey || a.activityType.parentTypeKey)) || a.activityTypeKey || '';
+      const durSec = num(a.duration) ?? num(a.elapsedDuration) ?? num(a.movingDuration) ?? 0;
+      const distM = num(a.distance);
+      const w = {id:'garmin-'+a.activityId, date, type: mapType(typeKey + ' ' + (a.activityName||'')), name: a.activityName || typeKey || 'Garmin activity',
+        durationMin: Math.round(durSec/60), distance: distM ? Math.round(distM / (S.settings.units==='mi' ? 1609.34 : 1000) * 10)/10 : null,
+        avgHr: num(a.averageHR) != null ? Math.round(a.averageHR) : null, tss: num(a.trainingStressScore), rpe: null, source:'garmin'};
+      const i = S.workouts.findIndex(x => x.id === w.id);
+      if(i >= 0){ const keepRpe = S.workouts[i].rpe; S.workouts[i] = Object.assign(w, {rpe: keepRpe}); nu++; return; }
+      const dup = S.workouts.some(x => !x.sample && x.source !== 'garmin' && x.date === w.date && x.type === w.type && Math.abs((x.durationMin||0) - w.durationMin) <= 3);
+      if(dup) return;
+      S.workouts.push(w); na++;
+    });
+    // Merge wellness without touching how-you-feel answers
+    let nw = 0;
+    Object.keys(well).forEach(d => {
+      if(d > t) return;
+      let ci = S.checkins[d]; if(!ci || ci.sample) ci = {};
+      const v = well[d]; let touched = false;
+      ['hrv','rhr','sleepH','sleepScore'].forEach(k => { if(v[k] != null){ ci[k] = v[k]; touched = true; } });
+      if(touched){ S.checkins[d] = ci; nw++; }
+    });
+    S.garmin.lastSync = Date.now(); save(); refreshData();
+    const hrvDays = Object.values(well).filter(x => x.hrv != null).length;
+    let msg = `Synced ${na} new activit${na===1?'y':'ies'}` + (nu ? ` (${nu} updated)` : '') + ` and wellness for ${nw} day${nw===1?'':'s'} (${hrvDays} with HRV).`;
+    if(notes.length) msg += ` Skipped: ${[...new Set(notes)].join(', ')}.`;
+    if(!hrvDays && nw) msg += ' No HRV came back. HRV needs a watch that records it overnight.';
+    setStatus('#g-status', msg, 'ok');
+    if(opts.quiet) toast('Garmin synced');
+  } catch(e){
+    let msg;
+    if(e.status===401 || e.status===403) msg = 'Garmin refused the key. Check it was copied in full and hasn’t expired, or create a new one.';
+    else if(e.status==='token') msg = 'Garmin didn’t return an access token. Try creating a new key.';
+    else if(e.status===429) msg = 'Garmin is limiting requests right now. Try again in a few minutes.';
+    else if(e.status===404 && S.garmin.relay) msg = 'The relay answered “not found”. Check the relay address.';
+    else if(e.status) msg = `Garmin returned an error (${e.status}) on ${e.path||'a request'}. Try again later.`;
+    else if(e.name==='AbortError') msg = 'Garmin took too long to answer. Try again.';
+    else msg = S.garmin.relay ? 'Couldn’t reach the relay. Check the address and that the relay is deployed.' : 'Your browser couldn’t reach Garmin directly. Garmin probably doesn’t allow web pages to call it, so this needs the small relay. Set it up once and paste its address above.';
+    setStatus('#g-status', msg, 'err');
+    if(opts.quiet) toast('Garmin sync failed. See Settings.');
+  } finally { garminBusy = false; }
 }
 
 /* ---------- sheets ---------- */
@@ -1029,6 +1205,7 @@ new MutationObserver(() => { if(current==='trends') renderTrends(); }).observe(d
 $('#hdr-date').textContent = new Date().toLocaleDateString(undefined,{weekday:'short', month:'short', day:'numeric'});
 buildSeries();
 show(location.hash.slice(1) || 'today');
+if(S.garmin.apiKey && S.garmin.autoSync && (!S.garmin.lastSync || Date.now() - S.garmin.lastSync > 3*3600e3)) setTimeout(() => garminImport({quiet:true}), 800);
 })();
 </script>
 
